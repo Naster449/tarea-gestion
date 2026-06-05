@@ -1,0 +1,213 @@
+SISTEMA WEB DE GESTIÓN DE EMPLEADOS, ASISTENCIA Y PLANILLAS (PeopleOps)
+=====================================================================
+
+1) OBJETIVO
+-----------
+Construir una aplicación web empresarial moderna y profesional (ideal para portafolio universitario) para:
+- Gestionar empleados (expedientes, áreas y cargos).
+- Controlar asistencia (entrada/salida, tardanzas y ausencias).
+- Generar planillas mensuales (cálculo de neto y boletas PDF).
+- Exportar reportes (Excel/PDF) y registrar notificaciones.
+
+IMPORTANTE: Este proyecto usa SQLite con SQL explícito (better-sqlite3) y NO utiliza Prisma.
+
+
+2) STACK TECNOLÓGICO
+-------------------
+Frontend
+- React + Vite
+- React Router DOM
+- Axios
+- Context API
+- TailwindCSS
+- React Icons
+- Recharts (gráficos)
+
+Backend
+- Node.js + Express
+- SQLite (better-sqlite3)
+- JWT (jsonwebtoken)
+- bcrypt (bcryptjs)
+- cors, dotenv
+- multer (subida de fotos)
+- nodemailer (correo opcional)
+- pdfkit (boletas PDF)
+- exceljs (reportes Excel)
+
+
+3) ARQUITECTURA / ESTRUCTURA
+----------------------------
+Repositorio
+- frontend/
+- backend/
+
+Backend (carpetas)
+backend/src/
+  app.js                     -> bootstrap del servidor + rutas + middleware de error
+  config/env.js               -> variables de entorno
+  db/index.js                 -> conexión e init de SQLite + utilidades run/get/all (async)
+  db/schema.sql               -> esquema SQL (tablas + índices)
+  controllers/                -> capa HTTP, solo recibe/valida mínimo y delega a services
+  services/                   -> lógica de negocio (asistencia, planillas, auth, reportes)
+  routes/                     -> definición REST de endpoints y middlewares por ruta
+  middlewares/                -> auth (JWT), roles, upload (multer), planillaAccess, error
+  utils/                      -> helpers (asyncHandler, pagination, HttpError, attendance)
+
+Frontend (carpetas)
+frontend/src/
+  App.jsx                     -> rutas públicas y protegidas
+  layouts/                    -> layout SaaS con sidebar
+  pages/                      -> Home, Login, Dashboard, Empleados, Asistencia, Planillas, Reportes, Notificaciones
+  components/                 -> Modal, Spinner, PaginationBar
+  routes/                     -> ProtectedRoute, RoleRoute
+  context/                    -> AuthContext (sesión), ThemeContext (modo oscuro)
+  services/                   -> APIs (axios) por módulo
+  hooks/                      -> useDebounce
+  utils/                      -> download de blobs (PDF/Excel)
+
+
+4) BASE DE DATOS (SQLITE)
+-------------------------
+El esquema vive en: backend/src/db/schema.sql
+
+Tablas principales:
+- usuarios
+  - username (opcional, único) -> usuarios de planilla SIN correo
+  - email (opcional, único)    -> usuarios internos con correo (ADMIN/RRHH/SECRETARIA)
+  - password (hash bcrypt)
+  - rol: ADMIN | RRHH | EMPLEADO | SECRETARIA
+  - empleadoId (opcional): vínculo a empleado real (solo para empleados reales)
+  - planillaAccessUntil (opcional): fecha/hora límite (ISO datetime) para acceso a planillas
+
+- empleados
+  - datos personales + organización (areaId, cargoId) + salario + estado + fotoPath
+
+- asistencias
+  - una por empleado y fecha (UNIQUE empleadoId+fecha)
+  - entradaAt, salidaAt, minutosTardanza, estado (PUNTUAL/TARDANZA/AUSENCIA/INCOMPLETO)
+
+- planillas
+  - una por empleado y periodo (UNIQUE empleadoId+periodo)
+  - cálculo neto con extras, descuentos, AFP, impuestos
+
+- areas, cargos
+- notificaciones
+
+
+5) AUTENTICACIÓN Y ROLES
+------------------------
+JWT:
+- Se genera token con: sub (id usuario), rol, empleadoId (si aplica).
+- Middleware auth: backend/src/middlewares/auth.middleware.js
+
+Roles:
+- ADMIN:
+  - Acceso total
+  - Puede crear usuarios (endpoint /api/usuarios)
+- RRHH:
+  - Gestión de empleados, asistencia, planillas y reportes
+- EMPLEADO:
+  - Acceso limitado; solo ve lo propio cuando está vinculado a empleadoId
+  - Para “usuarios de planilla” (sin empleadoId), el acceso se limita por planillaAccessUntil
+- SECRETARIA:
+  - No gestiona empleados ni planillas
+  - Su módulo es crear usuarios de planilla por username y vencimiento
+
+Login:
+- Acepta “usuario o correo”:
+  - Si contiene “@” => busca por email
+  - Si no => busca por username
+
+Persistencia de sesión:
+- Frontend guarda token + user en localStorage.
+
+
+6) USUARIOS DE PLANILLA (SECRETARIA)
+-----------------------------------
+Requisito: “usuarios que usen planillas tengan un usuario y no usen un correo”.
+
+Implementación:
+- La SECRETARIA crea usuarios con:
+  - username (sin correo)
+  - password
+  - planillaAccessUntil (fecha/hora de vencimiento)
+- Endpoint backend:
+  - GET  /api/secretaria/usuarios-planilla
+  - POST /api/secretaria/usuarios-planilla
+- UI frontend:
+  - Sección “Usuarios planilla” (solo rol SECRETARIA)
+  - Formulario para crear usuario y tabla para ver usuarios creados
+
+Control de vencimiento:
+- Middleware backend: backend/src/middlewares/planillaAccess.middleware.js
+- Se aplica en GET /api/planillas y GET /api/planillas/:id/boleta
+- Si planillaAccessUntil existe y está vencido: 403 “Acceso a planillas vencido”.
+
+
+7) PLANILLAS (CÁLCULO Y BOLETA PDF)
+----------------------------------
+Fórmula (simplificada):
+- bruto = salarioBase + bonos + (horasExtras * tarifaHoraExtra)
+- neto = bruto - descuentos - afp - impuestos
+
+Boleta:
+- Endpoint: GET /api/planillas/:id/boleta
+- Devuelve PDF generado con pdfkit.
+
+
+8) ASISTENCIA (TARDANZAS, AUSENCIAS, FILTROS)
+---------------------------------------------
+Entrada:
+- POST /api/asistencia/entrada
+Salida:
+- POST /api/asistencia/salida
+Ausencia (solo RRHH/ADMIN):
+- POST /api/asistencia/ausencia
+
+Tardanza:
+- Se calcula según:
+  - ATTENDANCE_EXPECTED_TIME (HH:mm)
+  - ATTENDANCE_GRACE_MINUTES
+
+
+9) REPORTES (EXCEL / PDF)
+-------------------------
+- Empleados activos:
+  - Excel: /api/reportes/empleados-activos?format=xlsx
+  - PDF:   /api/reportes/empleados-activos?format=pdf
+- Asistencia mensual:
+  - Excel: /api/reportes/asistencia-mensual?periodo=YYYY-MM&format=xlsx
+- Planillas:
+  - Excel: /api/reportes/planillas?format=xlsx
+- Salarios:
+  - Excel: /api/reportes/salarios?format=xlsx
+
+
+10) PÁGINA DE INICIO (ANTES DEL LOGIN)
+--------------------------------------
+Frontend agrega una página pública:
+- Ruta: /
+- Explica módulos y beneficios del servicio
+- Botón “Iniciar sesión” en esquina superior derecha que redirige a /login
+
+
+11) EJECUCIÓN EN LOCAL
+----------------------
+Backend:
+- cd backend
+- cp .env.example .env
+- npm install
+- npm run seed
+- npm run dev
+
+Frontend:
+- cd frontend
+- npm install
+- npm run dev
+
+Credenciales seed:
+- ADMIN: admin@empresa.demo / Admin123!
+- RRHH: rrhh@empresa.demo / Rrhh123!
+- EMPLEADO: empleado@empresa.demo / Emp123!
+- SECRETARIA: secretaria@empresa.demo / Sec123!
+
